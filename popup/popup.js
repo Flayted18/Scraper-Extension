@@ -2,19 +2,17 @@ document.addEventListener('DOMContentLoaded', () => {
     updateUI();
 
     document.getElementById('refreshBtn').addEventListener('click', updateUI);
-    document.getElementById('clearBtn').addEventListener('click', clearData);
+    document.getElementById('clearBtn').addEventListener('click', clearSavedLeads);
     document.getElementById('downloadBtn').addEventListener('click', downloadCSV);
+    document.getElementById('saveBtn').addEventListener('click', saveCurrentLeads);
+    document.getElementById('clearSearchBtn').addEventListener('click', clearCurrentLeads);
 
-    // Check if deep scrape is currently running
     chrome.storage.local.get(['deepScraping'], (data) => {
         setScrapingUI(!!data.deepScraping);
     });
 
     const deepBtn = document.getElementById('deepScrapeBtn');
     deepBtn.addEventListener('click', () => {
-        // Get the tab ID first, THEN show confirm.
-        // If we show confirm() first, Chrome may dismiss the popup before
-        // the async tab query returns, breaking message delivery.
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
             const tabId = tabs[0]?.id;
             if (!tabId) {
@@ -22,7 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            const ok = confirm("¿Deseas comenzar el Deep Scrape?\nEsto controlará la pantalla e irá extrayendo los correos lentamente.");
+            const ok = confirm("¿Deseas comenzar el Deep Scrape?\nEsto controlará la pantalla e irá extrayendo nombre, horario, teléfono, website y dirección.");
             if (!ok) return;
 
             chrome.tabs.sendMessage(tabId, { action: "startDeepScrape" }, (response) => {
@@ -53,13 +51,11 @@ document.addEventListener('DOMContentLoaded', () => {
 function setScrapingUI(isScraping) {
     const deepBtn = document.getElementById('deepScrapeBtn');
     const stopBtn = document.getElementById('stopBtn');
-    const container = document.querySelector('.container');
 
     if (isScraping) {
         deepBtn.style.display = 'none';
         stopBtn.style.display = '';
 
-        // Insert scraping banner if not already there
         if (!document.getElementById('scrapingBanner')) {
             const banner = document.createElement('div');
             banner.id = 'scrapingBanner';
@@ -77,36 +73,38 @@ function setScrapingUI(isScraping) {
 }
 
 async function updateUI() {
-    const data = await chrome.storage.local.get(['leads']);
+    const data = await chrome.storage.local.get(['leads', 'savedLeads']);
     const leads = data.leads || [];
+    const savedLeads = data.savedLeads || [];
 
-    // Update stats
     document.getElementById('count').textContent = leads.length;
+    document.getElementById('savedCount').textContent = savedLeads.length;
     document.getElementById('status').textContent = 'Activo';
 
-    // Update table
     const tbody = document.getElementById('previewBody');
     tbody.innerHTML = '';
 
+    document.getElementById('downloadBtn').disabled = savedLeads.length === 0;
+    document.getElementById('saveBtn').disabled = leads.length === 0;
+    document.getElementById('clearSearchBtn').disabled = leads.length === 0;
+
     if (leads.length === 0) {
         tbody.innerHTML = '<tr class="empty-state"><td colspan="3">Navega en Google Maps para detectar negocios...</td></tr>';
-        document.getElementById('downloadBtn').disabled = true;
         return;
     }
 
-    document.getElementById('downloadBtn').disabled = false;
-
-    // Show last 10 (reversed)
     const previewLeads = leads.slice().reverse().slice(0, 10);
 
     previewLeads.forEach(lead => {
         const tr = document.createElement('tr');
 
-        // Use textContent instead of innerHTML to prevent XSS
-        // if a business name contains HTML special characters
         const tdName = document.createElement('td');
         tdName.title = lead.name || '';
         tdName.textContent = lead.name || '-';
+
+        const tdPhone = document.createElement('td');
+        tdPhone.title = lead.phone || '';
+        tdPhone.textContent = lead.phone || '-';
 
         const tdWebsite = document.createElement('td');
         tdWebsite.title = lead.website || '';
@@ -120,44 +118,106 @@ async function updateUI() {
             tdWebsite.textContent = '-';
         }
 
-        const tdEmail = document.createElement('td');
-        tdEmail.title = lead.email || '';
-        tdEmail.textContent = lead.email || '-';
-
         tr.appendChild(tdName);
+        tr.appendChild(tdPhone);
         tr.appendChild(tdWebsite);
-        tr.appendChild(tdEmail);
         tbody.appendChild(tr);
     });
 }
 
-function clearData() {
-    if (confirm('¿Estás seguro de que quieres borrar todos los datos capturados?')) {
-        chrome.storage.local.remove('leads', () => {
+async function saveCurrentLeads() {
+    const tabId = await getActiveTabId();
+    if (!tabId) return;
+
+    chrome.tabs.sendMessage(tabId, { action: "getLeads" }, async (response) => {
+        if (chrome.runtime.lastError) {
+            alert("Error: Recarga la pestaña de Google Maps.");
+            return;
+        }
+
+        const leads = response?.leads || [];
+        const savedData = await chrome.storage.local.get(['savedLeads']);
+        const savedLeads = savedData.savedLeads || [];
+
+        // Count how many are already saved
+        const existingLinks = new Set(savedLeads.map(l => l.link));
+        const newLeads = leads.filter(l => !existingLinks.has(l.link));
+        const totalAfter = savedLeads.length + newLeads.length;
+
+        const ok = confirm(`Se guardarán ${leads.length} negocios nuevos.\nTotal acumulado: ${totalAfter} negocios.\n¿Continuar?`);
+        if (!ok) return;
+
+        // Send save command to content script
+        chrome.tabs.sendMessage(tabId, { action: "saveLeadsToStorage" }, () => {
+            if (chrome.runtime.lastError) {
+                // Fallback: save directly from popup
+                const merged = [...savedLeads];
+                leads.forEach(lead => {
+                    if (!merged.some(l => l.link === lead.link)) {
+                        merged.push(lead);
+                    }
+                });
+                chrome.storage.local.set({ savedLeads: merged, leads: [] });
+            }
+        });
+
+        updateUI();
+    });
+}
+
+async function getActiveTabId() {
+    return new Promise((resolve) => {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            resolve(tabs[0]?.id || null);
+        });
+    });
+}
+
+function clearSavedLeads() {
+    if (confirm('¿Estás seguro de que quieres borrar TODOS los negocios guardados?')) {
+        chrome.storage.local.remove('savedLeads', () => {
             updateUI();
         });
     }
 }
 
+async function clearCurrentLeads() {
+    const tabId = await getActiveTabId();
+    if (!tabId) return;
+
+    chrome.tabs.sendMessage(tabId, { action: "getLeads" }, (response) => {
+        const leads = response?.leads || [];
+        if (leads.length === 0) return;
+
+        const ok = confirm(`¿Borrar los ${leads.length} negocios de esta búsqueda? (No afecta los guardados)`);
+        if (!ok) return;
+
+        chrome.tabs.sendMessage(tabId, { action: "clearCurrentLeads" }, () => {
+            if (chrome.runtime.lastError) {
+                chrome.storage.local.set({ leads: [] });
+            }
+            updateUI();
+        });
+    });
+}
+
 async function downloadCSV() {
-    const data = await chrome.storage.local.get(['leads']);
-    const leads = data.leads || [];
+    const data = await chrome.storage.local.get(['savedLeads']);
+    const leads = data.savedLeads || [];
 
     if (leads.length === 0) return;
 
-    const headers = ['Nombre', 'Teléfono', 'Ubicación', 'Website', 'Email Extraído', 'Rating', 'Categoría', 'Link'];
+    const headers = ['Nombre', 'Horario', 'Teléfono', 'Website', 'Dirección', 'Link'];
     const csvContent = [
         headers.join(','),
         ...leads.map(lead => {
             return [
                 escapeCSV(lead.name),
+                escapeCSV(lead.hours),
                 escapeCSV(lead.phone),
-                escapeCSV(lead.address),
                 escapeCSV(lead.website),
-                escapeCSV(lead.email),
-                escapeCSV(lead.rating),
-                escapeCSV(lead.category),
-                escapeCSV(lead.link) // Maps link
+                escapeCSV(lead.address),
+                escapeCSV(lead.link)
             ].join(',');
         })
     ].join('\n');

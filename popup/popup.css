@@ -125,6 +125,20 @@ h1 {
   border-color: #fce8e6;
 }
 
+.btn.success {
+  background: #34a853;
+  color: white;
+}
+
+.btn.success:hover {
+  background: #2d8f47;
+}
+
+.btn.success:disabled {
+  background: var(--gray);
+  cursor: not-allowed;
+}
+
 .preview {
   border-top: 1px solid var(--border);
   padding-top: 12px;

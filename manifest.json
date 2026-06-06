@@ -1,15 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Google Maps Lead Scraper",
-  "version": "1.8",
-  "description": "Scrape local business leads from Google Maps automatically while scrolling.",
+  "version": "2.0",
+  "description": "Scrape local business leads from Google Maps: name, hours, phone, website, address.",
   "permissions": [
     "storage"
   ],
-  "host_permissions": [
-    "https://www.google.com/maps/*",
-    "<all_urls>"
-  ],
+"host_permissions": [
+     "https://www.google.com/maps/*"
+   ],
   "background": {
     "service_worker": "background.js"
   },
